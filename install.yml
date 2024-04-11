@@ -1,0 +1,75 @@
+# tasks file for node_exporter deployment
+- name: download node exporter
+  get_url:
+    url: "{{ node_exporter_binary_url }}"
+    dest: /tmp
+    mode: '0755'
+
+- name: unarchive node exporter
+  unarchive:
+    remote_src: yes
+    src: /tmp/node_exporter-1.7.0.linux-amd64.tar.gz
+    dest: /tmp
+
+- name: move node exporter to /usr/bin
+  copy:
+    src: /tmp/node_exporter-1.7.0.linux-amd64/node_exporter
+    dest: /usr/bin/node_exporter
+    remote_src: yes
+    owner: root
+    group: root
+    mode: 0755
+
+- name: Add ports to firewall
+  firewalld:
+    port: "9100/tcp"
+    state: enabled
+    immediate: true
+    permanent: true
+
+- name: install unit file to systemd
+  template:
+    src: /var/ansible/roles/node_exporter/files/node_exporter.service.j2
+    dest: /etc/systemd/system/node_exporter.service
+    owner: root
+    group: root
+    mode: 0600
+
+- name: configure systemd to use service
+  systemd:
+    daemon_reload: yes
+    enabled: yes
+    state: started
+    name: node_exporter.service
+
+- name: Fetch ips address using shell command
+  with_items: "{{ groups['node_exporter'] }}"
+  vars:
+    command: "hostname -I | awk '{print $1}'"
+  shell: "{{ command }}"
+  register: output
+
+- name: get ips and add port
+  debug:
+    var: targets
+  vars:
+    suffix: :9100
+    a_list: "{{ output | json_query('results[].item') }}"
+    targets: "{{ a_list | product([suffix]) | map('join') | list }}"
+  register: targets
+
+- name: register config file
+  stat:
+    path: "/etc/prometheus/prometheus.yml"
+  register: config_file
+
+- name: add targets to prometheus.yml
+  blockinfile:
+    path: "/etc/prometheus/prometheus.yml"
+    block: |2
+           - job_name: '{{job}}'
+             scrape_interval: 5s
+             static_configs:
+               - targets: {{ targets | json_query('targets[]') }}
+  when: config_file.stat.exists
+
